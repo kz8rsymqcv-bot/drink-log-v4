@@ -1,0 +1,1112 @@
+<!DOCTYPE html>
+<html lang="zh-Hant-TW">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <title>飲料紀錄</title>
+
+  <!-- iOS PWA -->
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="飲料紀錄" />
+
+  <!-- iOS 主畫面 icon（吃你現在的 .PNG + 兼容小寫） -->
+  <link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.PNG">
+  <link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.png">
+  <link rel="icon" type="image/png" href="./apple-touch-icon.PNG">
+  <link rel="icon" type="image/png" href="./apple-touch-icon.png">
+
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;700;900&display=swap');
+
+    :root{
+      --main:#8A9A5B;
+      --main-dark:#556B2F;
+      --bg:#F2F4EF;
+      --weekend:#C08282;
+      --today-border:#CFE0B8;
+      --card:#ffffff;
+      --muted:#A5B997;
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+    }
+    body{
+      font-family:'Noto Sans TC', system-ui, -apple-system, "PingFang TC", "Heiti TC", sans-serif;
+      -webkit-tap-highlight-color: transparent;
+      background: var(--bg);
+      padding-top: env(safe-area-inset-top);
+      padding-bottom: env(safe-area-inset-bottom);
+      overscroll-behavior-y: none;
+      overflow: hidden; /* ✅ 主畫面不滾動，保一頁一目瞭然 */
+    }
+
+    .no-scrollbar::-webkit-scrollbar{ display:none; }
+
+    /* 一屏主畫面 */
+    #app{
+      height: 100svh;
+    }
+
+    /* ✅ 日曆容器可伸縮：自動壓縮/放大以配合不同 iPhone 螢幕，不用滑動 */
+    .calendar-shell{
+      display:flex;
+      flex-direction:column;
+      flex: 1 1 auto;
+      min-height: 0;               /* ✅ 允許在 flex 裡縮小 */
+      border-radius: 2rem;
+      overflow:hidden;
+      background: rgba(255,255,255,.95);
+      border: 1px solid rgba(255,255,255,.9);
+      box-shadow: 0 6px 18px rgba(0,0,0,.06);
+    }
+
+    /* ✅ 星期列跟日期格同一套 grid，保證對齊 */
+    .cal-grid{
+      display:grid;
+      grid-template-columns: repeat(7, minmax(0,1fr));
+      gap: 8px;
+      padding: 12px 14px 10px;
+      flex: 0 0 auto;
+    }
+    .weekday-cell{
+      text-align:center;
+      font-size: 10px;
+      font-weight: 900;
+      letter-spacing: .3em;
+      transform: translateX(.15em); /* 視覺微調（因為字距） */
+    }
+
+    /* ✅ 固定 6 row，但高度由可用空間自動決定（不再用 clamp 固死） */
+    .days-grid{
+      display:grid;
+      grid-template-columns: repeat(7, minmax(0,1fr));
+      grid-template-rows: repeat(6, 1fr);
+      gap: 8px;
+      padding: 0 14px 14px;
+      flex: 1 1 auto;             /* ✅ 吃剩餘高度 */
+      min-height: 0;              /* ✅ 允許縮小避免整頁滾動 */
+    }
+
+    .day-cell{
+      width: 100%;
+      height: 100%;
+      border-radius: 22px;
+      display:flex;
+      flex-direction:column;
+      align-items:center;
+      justify-content:center;
+      border: 1px solid rgba(255,255,255,.75);
+      box-shadow: 0 1px 0 rgba(0,0,0,.03);
+      user-select:none;
+    }
+
+    .today-ring{
+      outline: 2px solid var(--today-border);
+      outline-offset: -2px;
+    }
+
+    .modal-sheet{
+      max-height: 85svh;
+      overflow-y:auto;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    /* iOS 中文輸入：至少 16px */
+    input, button{
+      font-size: 16px;
+    }
+
+    /* Debug overlay */
+    #fatal{
+      display:none;
+      position:fixed;
+      inset:0;
+      background:#fff;
+      padding:16px;
+      z-index:9999;
+      overflow:auto;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    #fatal pre{
+      white-space:pre-wrap;
+      font-size:12px;
+      line-height:1.4;
+    }
+
+    /* ✅ 我最常喝：避免 ...，允許換行 */
+    .wrap-text{
+      white-space: normal !important;
+      overflow: visible !important;
+      text-overflow: clip !important;
+      word-break: break-word;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="fatal">
+    <h2 style="font-size:16px; font-weight:700; margin-bottom:8px;">頁面爆了（JS Error）</h2>
+    <pre id="fatalMsg"></pre>
+  </div>
+
+  <div id="app" class="max-w-md mx-auto px-4 flex flex-col overflow-hidden"></div>
+
+  <script>
+    // ====== 白畫面自救：把錯誤吐出來 ======
+    window.addEventListener("error", (e) => {
+      const box = document.getElementById("fatal");
+      const msg = document.getElementById("fatalMsg");
+      if (box && msg) {
+        box.style.display = "block";
+        msg.textContent = `Error: ${e.message}\nFile: ${e.filename}\nLine: ${e.lineno}:${e.colno}`;
+      }
+    });
+    window.addEventListener("unhandledrejection", (e) => {
+      const box = document.getElementById("fatal");
+      const msg = document.getElementById("fatalMsg");
+      if (box && msg) {
+        box.style.display = "block";
+        msg.textContent = `Promise Rejection: ${String(e.reason)}`;
+      }
+    });
+
+    /********************
+     * Storage Keys
+     ********************/
+    const KEY_TITLE = "fpj_app_title";
+    const KEY_DATA  = "fpj_offline_data_v3";
+    const KEY_SHOPS = "fpj_shop_list_v2";
+
+    /********************
+     * Options
+     ********************/
+    const iceOptions   = ["正常","少冰","微冰","去冰","常溫","溫","熱","固定"];
+    const sugarOptions = ["全糖","少糖","半糖","微糖","一分","0.5分","無糖","固定"];
+
+    const defaultShops = ["五十嵐","可不可","麻古","得正","五桐號","鶴茶樓","迷客夏","大苑子"];
+
+    /********************
+     * State
+     ********************/
+    const today = new Date();
+    let state = {
+      currentDate: new Date(today.getFullYear(), today.getMonth(), 1),
+      selectedDate: null,
+      appTitle: localStorage.getItem(KEY_TITLE) || "一隻肥豬嘉的誕生",
+      isEditingTitle: false,
+      records: safeParse(localStorage.getItem(KEY_DATA)) || {},
+      shops: loadShops(),
+      shopPicker: { open:false, targetIdx:null, managing:false },
+    };
+
+    function safeParse(s){
+      try{ return JSON.parse(s); }catch(e){ return null; }
+    }
+
+    function saveData(){
+      localStorage.setItem(KEY_DATA, JSON.stringify(state.records));
+    }
+    function saveTitle(t){
+      state.appTitle = t;
+      localStorage.setItem(KEY_TITLE, t);
+    }
+
+    function loadShops(){
+      const saved = safeParse(localStorage.getItem(KEY_SHOPS));
+      if(Array.isArray(saved) && saved.length) return uniqueList(saved);
+      return [...defaultShops];
+    }
+    function saveShops(){
+      localStorage.setItem(KEY_SHOPS, JSON.stringify(uniqueList(state.shops)));
+    }
+    function uniqueList(arr){
+      const seen = new Set();
+      const out = [];
+      for(const x of arr){
+        const v = String(x||"").trim();
+        if(!v) continue;
+        if(seen.has(v)) continue;
+        seen.add(v);
+        out.push(v);
+      }
+      return out;
+    }
+
+    function formatDateKey(d){
+      return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+    }
+
+    function parseKeyDate(key){
+      const [y,m,d] = String(key).split("-").map(n=>Number(n));
+      if(!y || !m || !d) return null;
+      return new Date(y, m-1, d);
+    }
+
+    function sameDay(a,b){
+      return a.getFullYear()===b.getFullYear() && a.getMonth()===b.getMonth() && a.getDate()===b.getDate();
+    }
+
+    function ensureDayArray(dateKey){
+      if(!state.records[dateKey]) state.records[dateKey] = [];
+      return state.records[dateKey];
+    }
+
+    function defaultDrink(){
+      return { shop:"", item:"", ice:"去冰", sugar:"無糖", price:0, rating:null };
+    }
+
+    function drinkLabel(drink){
+      const shop = (drink.shop||"").trim();
+      const item = (drink.item||"").trim();
+      const s = drink.sugar || "無糖";
+      const i = drink.ice || "去冰";
+      const base = `${shop}${shop&&item?"-":""}${item}`.trim() || "（未命名）";
+      return `${base}（${s}/${i}）`;
+    }
+
+    // iOS 穩定版 escape
+    function escapeHtml(s){
+      return String(s||"")
+        .replace(/&/g,"&amp;")
+        .replace(/</g,"&lt;")
+        .replace(/>/g,"&gt;")
+        .replace(/"/g,"&quot;")
+        .replace(/'/g,"&#039;");
+    }
+
+    /********************
+     * Stats
+     ********************/
+    function calculateStats(){
+      const y = state.currentDate.getFullYear();
+      const m = state.currentDate.getMonth();
+
+      let yTotal=0, yCount=0, mTotal=0, mCount=0;
+
+      // 用於「我最常喝」：以 店家-品項 為 key 統計次數，但顯示要用該 key 中最常出現的（甜度/冰量）
+      const comboFreq = {};         // comboKey -> count
+      const comboVariant = {};      // comboKey -> { variantKey -> count }
+      const goodList = [];
+      const badList  = [];
+
+      for(const key of Object.keys(state.records)){
+        const dt = parseKeyDate(key);
+        if(!dt) continue;
+
+        const isYear  = dt.getFullYear() === y;
+        const isMonth = isYear && dt.getMonth() === m;
+
+        for(const drink of (state.records[key]||[])){
+          const price = Number(drink.price || 0);
+
+          if(isYear){ yTotal += price; yCount++; }
+          if(isMonth){ mTotal += price; mCount++; }
+
+          const shop = (drink.shop||"").trim();
+          const item = (drink.item||"").trim();
+          if(shop && item){
+            const combo = `${shop}-${item}`;
+            comboFreq[combo] = (comboFreq[combo]||0)+1;
+
+            const variantKey = `${drink.sugar||"無糖"}|${drink.ice||"去冰"}`;
+            if(!comboVariant[combo]) comboVariant[combo] = {};
+            comboVariant[combo][variantKey] = (comboVariant[combo][variantKey]||0)+1;
+          }
+
+          if(drink.rating === "good") goodList.push({drink, date:key});
+          if(drink.rating === "bad")  badList.push({drink, date:key});
+        }
+      }
+
+      const topCombos = Object.entries(comboFreq)
+        .sort((a,b)=>b[1]-a[1])
+        .slice(0,3)
+        .map(([combo,count])=>{
+          const variants = comboVariant[combo] || {};
+          let bestVar = null, bestVarCount = -1;
+          for(const vk of Object.keys(variants)){
+            if(variants[vk] > bestVarCount){
+              bestVarCount = variants[vk];
+              bestVar = vk;
+            }
+          }
+          const [sugar, ice] = bestVar ? bestVar.split("|") : ["無糖","去冰"];
+          return { combo, count, sugar, ice };
+        });
+
+      return { yTotal, yCount, mTotal, mCount, topCombos, goodList, badList };
+    }
+
+    /********************
+     * Render
+     ********************/
+    function render(){
+      const app = document.getElementById("app");
+      const stats = calculateStats();
+
+      const year = state.currentDate.getFullYear();
+      const month = state.currentDate.getMonth();
+      const daysInMonth = new Date(year, month+1, 0).getDate();
+      const firstDay = new Date(year, month, 1).getDay();
+
+      // 標題
+      let titleHtml = "";
+      if(state.isEditingTitle){
+        titleHtml = `
+          <input id="titleInput" type="text"
+            class="text-xl font-black text-[var(--main)] text-center bg-white rounded-full px-4 py-2 border-2 border-[var(--main)] w-full max-w-[280px] outline-none"
+            value="${escapeHtml(state.appTitle)}" />
+        `;
+      }else{
+        titleHtml = `
+          <div id="titleDisplay" class="flex items-center gap-2 cursor-pointer active:opacity-60 select-none">
+            <h1 class="text-xl font-black tracking-widest text-[var(--main)]">${escapeHtml(state.appTitle)}</h1>
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--main)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50">
+              <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
+            </svg>
+          </div>
+        `;
+      }
+
+      // ✅ 42 格（6 週）固定，不跳動
+      const cells = [];
+      for(let i=0;i<firstDay;i++) cells.push(null);
+      for(let d=1; d<=daysInMonth; d++){
+        cells.push(new Date(year, month, d));
+      }
+      while(cells.length < 42) cells.push(null);
+
+      let calendarCells = "";
+      for(let idx=0; idx<42; idx++){
+        const dateObj = cells[idx];
+        if(!dateObj){
+          calendarCells += `<div class="day-cell bg-white/0 border-transparent shadow-none"></div>`;
+          continue;
+        }
+
+        const key = formatDateKey(dateObj);
+        const list = state.records[key] || [];
+        const count = list.length;
+
+        const isWeekend = (idx % 7 === 0) || (idx % 7 === 6);
+        const isToday = sameDay(dateObj, today);
+
+        let bgClass = "bg-white/40";
+        if(count===1) bgClass = "bg-[#E1EAD1]";
+        if(count===2) bgClass = "bg-[#FEF5D4]";
+        if(count>=3) bgClass = "bg-[#FEE2E2]";
+
+        const daySum = count>0 ? list.reduce((s,i)=>s+Number(i.price||0),0) : 0;
+
+        calendarCells += `
+          <button data-day="${dateObj.getDate()}" class="day-cell ${bgClass} ${isToday ? "today-ring" : ""} active:scale-95 transition-transform relative">
+            <span class="text-[12px] font-black" style="color:${isWeekend ? 'var(--weekend)' : 'var(--main-dark)'}">${dateObj.getDate()}</span>
+            ${count>0 ? `<span class="text-[9px] font-bold text-slate-400 leading-none mt-0.5">$${daySum}</span>` : ``}
+          </button>
+        `;
+      }
+
+      const goodCount = stats.goodList.length;
+      const badCount  = stats.badList.length;
+
+      // ✅ 主畫面 TOP：固定 3 格（就算沒資料也要同寬同風格）
+      const topShow = stats.topCombos.slice(0,3);
+      const topSlots = [0,1,2].map(i=>topShow[i] || null);
+
+      app.innerHTML = `
+        <!-- Header -->
+        <div class="flex justify-center items-center pt-4 pb-3 shrink-0">
+          ${titleHtml}
+        </div>
+
+        <!-- Stats -->
+        <div class="grid grid-cols-2 gap-3 mb-3 shrink-0">
+          <div class="bg-white/80 p-3 rounded-[1.5rem] shadow-sm border border-white text-center relative overflow-hidden">
+            <div class="absolute top-0 left-0 w-full h-1 bg-[#CD5C5C]/20"></div>
+            <p class="text-[10px] font-black text-[#CD5C5C] mb-1 tracking-widest">年度累計</p>
+            <p class="text-sm font-black text-slate-700">
+              ${stats.yCount} <span class="text-[10px] text-slate-400">杯</span>
+              <span class="text-[#CD5C5C] ml-1">$${stats.yTotal.toLocaleString()}</span>
+            </p>
+          </div>
+
+          <div class="bg-white/80 p-3 rounded-[1.5rem] shadow-sm border border-white text-center relative overflow-hidden">
+            <div class="absolute top-0 left-0 w-full h-1 bg-[var(--main)]/20"></div>
+            <p class="text-[10px] font-black text-[var(--main)] mb-1 tracking-widest">本月統計</p>
+            <p class="text-sm font-black text-slate-700">
+              ${stats.mCount} <span class="text-[10px] text-slate-400">杯</span>
+              <span class="text-[var(--main-dark)] ml-1">$${stats.mTotal.toLocaleString()}</span>
+            </p>
+          </div>
+        </div>
+
+        <!-- Month Selector + Plus -->
+        <div class="flex justify-center mb-3 shrink-0">
+          <div class="flex items-center gap-4 bg-white/60 px-5 py-2 rounded-full border border-white/40 shadow-sm w-full">
+            <button id="prevMonth" class="text-[var(--main)] font-black text-lg active:scale-75 transition-transform">〈</button>
+
+            <p class="font-black text-base tracking-tighter text-[var(--main-dark)] min-w-[92px] text-center flex-1">
+              ${year}.${String(month+1).padStart(2,'0')}
+            </p>
+
+            <button id="nextMonth" class="text-[var(--main)] font-black text-lg active:scale-75 transition-transform">〉</button>
+
+            <button id="goToday" class="px-3 py-1.5 rounded-full bg-white/70 border border-white/60 text-[11px] font-black text-[var(--main-dark)] active:scale-95 transition-transform">今天</button>
+
+            <button id="quickAdd" class="ml-1 w-10 h-10 rounded-full bg-white/80 border border-white/70 shadow-sm flex items-center justify-center active:scale-95 transition-transform">
+              <span class="text-[22px] leading-none font-black" style="color:var(--main-dark)">＋</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Calendar (flex 自動壓縮) -->
+        <div class="calendar-shell mb-3">
+          <div class="cal-grid">
+            ${['日','一','二','三','四','五','六'].map((d,i)=>`
+              <div class="weekday-cell" style="color:${(i===0||i===6)?'var(--weekend)':'#A5B997'}">${d}</div>
+            `).join('')}
+          </div>
+
+          <div class="days-grid">
+            ${calendarCells}
+          </div>
+        </div>
+
+        <!-- Bottom -->
+        <div class="shrink-0 space-y-3 pb-2">
+          <!-- TOP card (click -> 我最常喝) -->
+          <button id="openMost" class="relative bg-white/70 px-4 py-4 rounded-[1.6rem] border border-white shadow-sm active:scale-[0.99] transition-transform w-full">
+            <div class="absolute left-1/2 -translate-x-1/2 -top-3 px-6 py-1.5 rounded-full bg-[var(--main)] text-white font-black text-xs shadow-sm">
+              TOP
+            </div>
+
+            <!-- ✅ 永遠固定三格，沒資料也要跟有資料一樣寬 -->
+            <div class="grid grid-cols-3 gap-3 pt-3">
+              ${topSlots.map(slot=>{
+                if(!slot){
+                  return `
+                    <div class="bg-white rounded-2xl border border-[#E1EAD1] p-3 text-center">
+                      <div class="text-[13px] font-black text-slate-200">—</div>
+                      <div class="text-[11px] font-bold text-slate-200 mt-1">—</div>
+                    </div>
+                  `;
+                }
+                const [shop,item] = slot.combo.split("-");
+                return `
+                  <div class="bg-white rounded-2xl border border-[#E1EAD1] p-3 text-center">
+                    <div class="text-[13px] font-black text-[var(--main-dark)]">${escapeHtml(shop||"")}</div>
+                    <div class="text-[11px] font-bold text-slate-400 mt-1">${escapeHtml(item||"")}</div>
+                  </div>
+                `;
+              }).join("")}
+            </div>
+          </button>
+
+          <!-- Good/Bad (✅ 往上提一點：pb-2 + 不額外加高) -->
+          <div class="grid grid-cols-2 gap-3">
+            <button id="openGood" class="bg-white/70 py-4 rounded-[1.2rem] border border-white flex items-center justify-center gap-2 text-[12px] font-black shadow-sm active:scale-95 transition-transform text-[var(--main-dark)]">
+              ${thumbIcon("var(--main-dark)")}
+              <span>讚讚 (${goodCount})</span>
+            </button>
+
+            <button id="openBad" class="bg-white/70 py-4 rounded-[1.2rem] border border-white flex items-center justify-center gap-2 text-[12px] font-black shadow-sm active:scale-95 transition-transform text-[#B56B6B]">
+              ${thumbDownIcon("#B56B6B")}
+              <span>踩雷 (${badCount})</span>
+            </button>
+          </div>
+        </div>
+      `;
+
+      wireMainEvents();
+
+      if(state.isEditingTitle){
+        const input = document.getElementById("titleInput");
+        input.focus();
+        input.addEventListener("blur", ()=>{
+          const v = (input.value||"").trim();
+          if(v) saveTitle(v);
+          state.isEditingTitle = false;
+          render();
+        }, { once:true });
+      }
+    }
+
+    /********************
+     * Icons
+     ********************/
+    function thumbIcon(color){
+      return `
+        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3z"/>
+          <path d="M7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"/>
+        </svg>
+      `;
+    }
+    function thumbDownIcon(color){
+      return `
+        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3z"/>
+          <path d="M17 2h3a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-3"/>
+        </svg>
+      `;
+    }
+
+    /********************
+     * Main Events
+     ********************/
+    function wireMainEvents(){
+      const titleDisplay = document.getElementById("titleDisplay");
+      if(titleDisplay){
+        titleDisplay.onclick = ()=>{
+          state.isEditingTitle = true;
+          render();
+        };
+      }
+
+      document.getElementById("prevMonth").onclick = ()=>{
+        state.currentDate = new Date(state.currentDate.getFullYear(), state.currentDate.getMonth()-1, 1);
+        render();
+      };
+      document.getElementById("nextMonth").onclick = ()=>{
+        state.currentDate = new Date(state.currentDate.getFullYear(), state.currentDate.getMonth()+1, 1);
+        render();
+      };
+      document.getElementById("goToday").onclick = ()=>{
+        state.currentDate = new Date(today.getFullYear(), today.getMonth(), 1);
+        render();
+      };
+
+      document.getElementById("quickAdd").onclick = ()=>{
+        // 直接開「今天」
+        const d = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+        state.currentDate = new Date(d.getFullYear(), d.getMonth(), 1);
+        render();
+        openEditModal(d.getDate());
+      };
+
+      document.querySelectorAll("[data-day]").forEach(btn=>{
+        btn.addEventListener("click", ()=>{
+          const day = Number(btn.getAttribute("data-day"));
+          openEditModal(day);
+        });
+      });
+
+      document.getElementById("openGood").onclick = ()=> openListModal("good");
+      document.getElementById("openBad").onclick  = ()=> openListModal("bad");
+      document.getElementById("openMost").onclick = ()=> openMostModal();
+    }
+
+    /********************
+     * Edit Modal
+     ********************/
+    function openEditModal(day){
+      state.selectedDate = new Date(state.currentDate.getFullYear(), state.currentDate.getMonth(), day);
+      const dateKey = formatDateKey(state.selectedDate);
+      ensureDayArray(dateKey);
+
+      const modal = document.createElement("div");
+      modal.id = "editModal";
+      modal.className = "fixed inset-0 bg-[var(--main-dark)]/40 backdrop-blur-md z-[100] flex items-end";
+      modal.innerHTML = `
+        <div class="modal-sheet bg-[#FAFBF9] w-full rounded-t-[2.5rem] p-6 pb-10 shadow-2xl no-scrollbar">
+          <div class="flex justify-between items-center mb-5">
+            <h3 class="text-xl font-black text-[var(--main-dark)]">${state.selectedDate.getMonth()+1}月${state.selectedDate.getDate()}日</h3>
+            <button id="closeEdit" class="w-10 h-10 bg-white rounded-full flex items-center justify-center shadow-sm text-slate-300 text-lg">✕</button>
+          </div>
+
+          <div id="drinkList" class="space-y-4"></div>
+
+          <button id="saveClose" class="w-full mt-6 py-4 bg-[var(--main-dark)] text-white rounded-[1.5rem] font-black text-base shadow-xl active:scale-95 transition-transform">
+            儲存紀錄
+          </button>
+        </div>
+      `;
+
+      const old = document.getElementById("editModal");
+      if(old) old.remove();
+
+      document.body.appendChild(modal);
+
+      document.getElementById("closeEdit").onclick = closeEditModal;
+      document.getElementById("saveClose").onclick = closeEditModal;
+
+      renderDrinkCards();
+    }
+
+    function closeEditModal(){
+      const m = document.getElementById("editModal");
+      if(m) m.remove();
+      closeShopPicker();
+      render();
+    }
+
+    function renderDrinkCards(){
+      const dateKey = formatDateKey(state.selectedDate);
+      const list = ensureDayArray(dateKey);
+
+      const container = document.getElementById("drinkList");
+      container.innerHTML = "";
+
+      for(let idx=0; idx<3; idx++){
+        const drink = list[idx];
+        const exists = !!drink;
+
+        const canShow =
+          idx===0 ||
+          (list[idx-1] && (String(list[idx-1].item||"").trim() !== "" || String(list[idx-1].shop||"").trim() !== "")) ||
+          exists;
+
+        if(!canShow) continue;
+
+        if(!exists){
+          const add = document.createElement("div");
+          add.className = "p-5 rounded-[2rem] bg-[#F2F4EF] border-2 border-dashed border-[#DDE4D1]";
+          add.innerHTML = `
+            <button class="w-full py-4 text-[#A5B997] font-black text-xs flex flex-col items-center gap-1 active:opacity-60">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
+                <path d="M12 5v14M5 12h14"/>
+              </svg>
+              新增第 ${idx+1} 杯
+            </button>
+          `;
+          add.querySelector("button").onclick = ()=>{
+            while(list.length <= idx) list.push(defaultDrink());
+            saveData();
+            renderDrinkCards();
+          };
+          container.appendChild(add);
+          continue;
+        }
+
+        const card = document.createElement("div");
+        card.className = "p-5 rounded-[2rem] bg-white shadow-sm border border-white space-y-3";
+        card.innerHTML = `
+          <!-- ✅ 修：讚/雷/刪除 三顆按鈕同尺寸同對齊（不會飄走） -->
+          <div class="flex justify-between items-center">
+            <span class="bg-[var(--main)] text-white px-3 py-1 rounded-full text-[10px] font-black tracking-widest">NO.${idx+1}</span>
+            <div class="flex gap-2 items-center">
+              <button class="p-2 rounded-lg ${drink.rating==='good' ? 'bg-[#E1EAD1] text-[var(--main-dark)]' : 'text-slate-300'}"
+                data-action="good" data-idx="${idx}">
+                ${thumbIcon("currentColor")}
+              </button>
+              <button class="p-2 rounded-lg ${drink.rating==='bad' ? 'bg-[#FEE2E2] text-[#B56B6B]' : 'text-slate-300'}"
+                data-action="bad" data-idx="${idx}">
+                ${thumbDownIcon("currentColor")}
+              </button>
+              <button class="p-2 rounded-lg text-slate-300"
+                data-action="del" data-idx="${idx}">
+                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/>
+                  <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-2 gap-2">
+            <button type="button"
+              class="bg-[#F2F4EF] p-3 rounded-xl text-xs font-bold w-full border-none outline-none text-left active:opacity-60"
+              data-action="pickShop" data-idx="${idx}">
+              <span class="${(drink.shop||'').trim() ? 'text-slate-700' : 'text-slate-300'}">
+                ${(drink.shop||"").trim() ? escapeHtml(drink.shop) : "店家"}
+              </span>
+            </button>
+
+            <input type="text" inputmode="text" autocomplete="off" autocapitalize="off"
+              class="bg-[#F2F4EF] p-3 rounded-xl text-xs font-bold w-full border-none outline-none focus:ring-1 focus:ring-[var(--main)]"
+              placeholder="品項" data-field="item" data-idx="${idx}" value="${escapeHtml(drink.item||"")}" />
+          </div>
+
+          <div class="space-y-1">
+            <p class="text-[10px] font-black text-[#A5B997] ml-1">甜度</p>
+            <div class="flex flex-wrap gap-1.5">
+              ${sugarOptions.map(opt=>`
+                <button data-field="sugar" data-idx="${idx}" data-val="${opt}"
+                  class="px-2.5 py-1.5 rounded-lg text-[10px] font-black transition-colors
+                  ${drink.sugar===opt ? 'bg-[var(--main)] text-white shadow-sm' : 'bg-[#F2F4EF] text-[#A5B997]'}">
+                  ${opt}
+                </button>
+              `).join("")}
+            </div>
+          </div>
+
+          <div class="space-y-1">
+            <p class="text-[10px] font-black text-[#A5B997] ml-1">冰量</p>
+            <div class="flex flex-wrap gap-1.5">
+              ${iceOptions.map(opt=>`
+                <button data-field="ice" data-idx="${idx}" data-val="${opt}"
+                  class="px-2.5 py-1.5 rounded-lg text-[10px] font-black transition-colors
+                  ${drink.ice===opt ? 'bg-[var(--main)] text-white shadow-sm' : 'bg-[#F2F4EF] text-[#A5B997]'}">
+                  ${opt}
+                </button>
+              `).join("")}
+            </div>
+          </div>
+
+          <div class="relative pt-2">
+            <span class="absolute left-3 top-5 text-[var(--main)] font-black text-xs">$</span>
+            <input type="number" inputmode="decimal"
+              class="w-full bg-[#F2F4EF] pl-8 p-3 rounded-xl text-sm font-black border-none outline-none focus:ring-1 focus:ring-[var(--main)]"
+              placeholder="金額" data-field="price" data-idx="${idx}" value="${escapeHtml(String(drink.price||""))}" />
+          </div>
+        `;
+
+        container.appendChild(card);
+      }
+
+      wireModalEvents();
+    }
+
+    function wireModalEvents(){
+      const modal = document.getElementById("editModal");
+      if(!modal) return;
+
+      const dateKey = formatDateKey(state.selectedDate);
+      const list = ensureDayArray(dateKey);
+
+      modal.querySelectorAll("[data-action]").forEach(btn=>{
+        btn.onclick = ()=>{
+          const idx = Number(btn.getAttribute("data-idx"));
+          const act = btn.getAttribute("data-action");
+          if(!list[idx]) return;
+
+          if(act==="good"){
+            list[idx].rating = (list[idx].rating==="good") ? null : "good";
+            saveData();
+            renderDrinkCards();
+            return;
+          }
+          if(act==="bad"){
+            list[idx].rating = (list[idx].rating==="bad") ? null : "bad";
+            saveData();
+            renderDrinkCards();
+            return;
+          }
+          if(act==="del"){
+            list.splice(idx,1);
+            if(list.length===0) delete state.records[dateKey];
+            saveData();
+            renderDrinkCards();
+            return;
+          }
+          if(act==="pickShop"){
+            openShopPicker(idx);
+            return;
+          }
+        };
+      });
+
+      modal.querySelectorAll("button[data-field='sugar'], button[data-field='ice']").forEach(btn=>{
+        btn.onclick = ()=>{
+          const idx = Number(btn.getAttribute("data-idx"));
+          const field = btn.getAttribute("data-field");
+          const val = btn.getAttribute("data-val");
+          if(!list[idx]) return;
+          list[idx][field] = val;
+          saveData();
+          renderDrinkCards();
+        };
+      });
+
+      modal.querySelectorAll("input[data-field]").forEach(inp=>{
+        const idx = Number(inp.getAttribute("data-idx"));
+        const field = inp.getAttribute("data-field");
+        let composing = false;
+
+        inp.addEventListener("compositionstart", ()=> composing = true);
+        inp.addEventListener("compositionend", (e)=>{
+          composing = false;
+          applyValue(e.target.value);
+        });
+
+        inp.addEventListener("input", (e)=>{
+          if(composing) return;
+          applyValue(e.target.value);
+        });
+
+        inp.addEventListener("blur", ()=>{
+          renderDrinkCards();
+        });
+
+        function applyValue(raw){
+          if(!list[idx]) return;
+          if(field === "price"){
+            list[idx].price = raw === "" ? 0 : Number(raw);
+          }else{
+            list[idx][field] = raw;
+          }
+          saveData();
+        }
+      });
+    }
+
+    /********************
+     * Shop Picker（✅ 加回：管理/完成 + 刪除店家）
+     ********************/
+    function openShopPicker(targetIdx){
+      closeShopPicker();
+      state.shopPicker = { open:true, targetIdx, managing:false };
+      renderShopPicker();
+    }
+
+    function renderShopPicker(){
+      const old = document.getElementById("shopPicker");
+      if(old) old.remove();
+
+      const modal = document.createElement("div");
+      modal.id = "shopPicker";
+      modal.className = "fixed inset-0 bg-black/55 backdrop-blur-md z-[120] flex items-center justify-center p-6";
+      modal.innerHTML = `
+        <div class="bg-white w-full rounded-[2.2rem] p-6 shadow-2xl" style="max-width:420px;">
+          <div class="flex items-center justify-center relative mb-4">
+            <h3 class="text-center font-black" style="color:var(--main-dark)">選擇店家</h3>
+
+            <!-- ✅ 管理/完成 -->
+            <button id="toggleManageShop"
+              class="absolute right-12 px-3 py-1.5 rounded-full bg-[#F2F4EF] text-[var(--main-dark)] font-black text-[12px] active:scale-95 transition-transform">
+              ${state.shopPicker.managing ? "完成" : "管理"}
+            </button>
+
+            <button id="closeShopX" class="absolute right-0 w-10 h-10 rounded-full bg-[#F2F4EF] text-slate-400 font-black">✕</button>
+          </div>
+
+          <div class="flex flex-wrap gap-2 justify-center mb-4" id="shopBtns">
+            ${state.shops.map((s)=>`
+              <div class="relative">
+                <button class="px-4 py-2 rounded-full bg-[#F2F4EF] text-[var(--main-dark)] font-black text-sm active:scale-95 transition-transform"
+                  data-shop="${escapeHtml(s)}">${escapeHtml(s)}</button>
+
+                ${
+                  state.shopPicker.managing
+                  ? `<button class="absolute -top-1 -right-1 w-6 h-6 rounded-full bg-white shadow flex items-center justify-center text-[#B56B6B] font-black"
+                      data-delshop="${escapeHtml(s)}">✕</button>`
+                  : ``
+                }
+              </div>
+            `).join("")}
+          </div>
+
+          <button id="openAddShop" class="w-full py-3 rounded-xl font-black text-sm border border-[#E1EAD1] text-[var(--main-dark)] bg-white active:scale-95 transition-transform">
+            ＋ 新增店家
+          </button>
+
+          <button id="closeShopPicker" class="w-full mt-3 py-3 bg-[var(--main-dark)] text-white rounded-xl font-black">關閉</button>
+        </div>
+      `;
+
+      document.body.appendChild(modal);
+
+      modal.addEventListener("click", (e)=>{
+        if(e.target.id==="shopPicker") closeShopPicker();
+      });
+
+      document.getElementById("closeShopPicker").onclick = closeShopPicker;
+      document.getElementById("closeShopX").onclick = closeShopPicker;
+
+      document.getElementById("toggleManageShop").onclick = ()=>{
+        state.shopPicker.managing = !state.shopPicker.managing;
+        renderShopPicker();
+      };
+
+      document.querySelectorAll("[data-shop]").forEach(btn=>{
+        btn.onclick = ()=>{
+          if(state.shopPicker.managing) return; // 管理模式不選取
+          const shop = btn.getAttribute("data-shop");
+          applyShopToTarget(shop);
+          closeShopPicker();
+        };
+      });
+
+      // ✅ 刪除店家
+      document.querySelectorAll("[data-delshop]").forEach(btn=>{
+        btn.onclick = (e)=>{
+          e.stopPropagation();
+          const shop = btn.getAttribute("data-delshop");
+          state.shops = state.shops.filter(s=>s !== shop);
+          saveShops();
+          renderShopPicker();
+        };
+      });
+
+      document.getElementById("openAddShop").onclick = openAddShopDialog;
+    }
+
+    function closeShopPicker(){
+      const m = document.getElementById("shopPicker");
+      if(m) m.remove();
+      state.shopPicker = { open:false, targetIdx:null, managing:false };
+    }
+
+    function openAddShopDialog(){
+      const overlay = document.createElement("div");
+      overlay.id = "addShopDialog";
+      overlay.className = "fixed inset-0 bg-black/55 backdrop-blur-md z-[130] flex items-center justify-center p-6";
+      overlay.innerHTML = `
+        <div class="bg-white w-full rounded-[2.2rem] p-6 shadow-2xl" style="max-width:420px;">
+          <h3 class="text-center font-black mb-4" style="color:var(--main-dark)">新增店家</h3>
+
+          <input id="newShopInput" type="text" inputmode="text" autocomplete="off" autocapitalize="off"
+            class="w-full bg-[#F2F4EF] p-4 rounded-2xl text-sm font-black border-none outline-none focus:ring-1 focus:ring-[var(--main)]"
+            placeholder="輸入店家名稱" />
+
+          <div class="grid grid-cols-2 gap-3 mt-4">
+            <button id="cancelAddShop" class="py-3 rounded-xl font-black text-sm border border-[#E1EAD1] text-[#B56B6B] bg-white">取消</button>
+            <button id="confirmAddShop" class="py-3 rounded-xl font-black text-sm bg-[var(--main-dark)] text-white">新增</button>
+          </div>
+        </div>
+      `;
+
+      document.body.appendChild(overlay);
+
+      const input = document.getElementById("newShopInput");
+      input.focus();
+
+      overlay.addEventListener("click",(e)=>{
+        if(e.target.id==="addShopDialog") overlay.remove();
+      });
+
+      document.getElementById("cancelAddShop").onclick = ()=> overlay.remove();
+
+      document.getElementById("confirmAddShop").onclick = ()=>{
+        const v = (input.value||"").trim();
+        if(!v) return;
+
+        state.shops = uniqueList([v, ...state.shops]);
+        saveShops();
+
+        overlay.remove();
+        renderShopPicker();
+      };
+    }
+
+    function applyShopToTarget(shop){
+      const dateKey = formatDateKey(state.selectedDate);
+      const list = ensureDayArray(dateKey);
+      const idx = state.shopPicker.targetIdx;
+      if(idx==null || !list[idx]) return;
+      list[idx].shop = shop;
+      saveData();
+      renderDrinkCards();
+    }
+
+    /********************
+     * 我最常喝 Modal（✅ 無 ... + 1/2/3 在格子外）
+     ********************/
+    function openMostModal(){
+      const stats = calculateStats();
+      const list = stats.topCombos; // 前三名
+
+      const items = list.length
+        ? list.map((it, i)=>`
+            <div class="flex items-start gap-2">
+              <div class="w-7 pt-2 text-center font-black text-[var(--main-dark)]">${i+1}</div>
+              <div class="flex-1 flex justify-between gap-3 p-3 bg-[#F2F4EF] rounded-2xl text-xs font-black">
+                <div class="wrap-text text-slate-700 pr-2">
+                  ${escapeHtml(it.combo)}（${escapeHtml(it.sugar)}/${escapeHtml(it.ice)}）
+                </div>
+                <div class="opacity-50 shrink-0 self-center">${it.count}次</div>
+              </div>
+            </div>
+          `).join("")
+        : `<p class="text-center text-xs text-slate-300 py-6">尚無資料</p>`;
+
+      const modal = document.createElement("div");
+      modal.id = "mostModal";
+      modal.className = "fixed inset-0 bg-black/60 backdrop-blur-md z-[110] flex items-center justify-center p-8";
+      modal.innerHTML = `
+        <div class="bg-white w-full rounded-[2.5rem] p-6 shadow-2xl" style="max-width:420px;">
+          <div class="flex items-center justify-center relative mb-4">
+            <h3 class="text-center font-black" style="color:var(--main-dark)">我最常喝</h3>
+            <button id="closeMostX" class="absolute right-0 w-10 h-10 rounded-full bg-[#F2F4EF] text-slate-400 font-black">✕</button>
+          </div>
+
+          <div class="max-h-72 overflow-y-auto space-y-2 no-scrollbar">
+            ${items}
+          </div>
+
+          <button id="closeMost" class="w-full mt-4 py-3 bg-[var(--main-dark)] text-white rounded-xl font-black">關閉</button>
+        </div>
+      `;
+
+      const old = document.getElementById("mostModal");
+      if(old) old.remove();
+
+      document.body.appendChild(modal);
+
+      modal.addEventListener("click", (e)=>{
+        if(e.target.id==="mostModal") closeMostModal();
+      });
+      document.getElementById("closeMost").onclick = closeMostModal;
+      document.getElementById("closeMostX").onclick = closeMostModal;
+    }
+
+    function closeMostModal(){
+      const m = document.getElementById("mostModal");
+      if(m) m.remove();
+    }
+
+    /********************
+     * List Modal (Good/Bad)（✅ 移除 emoji）
+     ********************/
+    function openListModal(type){
+      const stats = calculateStats();
+      const list = type==="good" ? stats.goodList : stats.badList;
+      const title = type==="good" ? "讚讚清單" : "踩雷紀錄";
+      const color = type==="good" ? "var(--main-dark)" : "#B56B6B";
+
+      const items = list.length
+        ? list.map(({drink, date})=>`
+            <div class="flex justify-between gap-3 p-3 bg-[#F2F4EF] rounded-2xl text-xs font-black">
+              <span class="wrap-text">${escapeHtml(drinkLabel(drink))}</span>
+              <span class="opacity-40 shrink-0">${escapeHtml(date.slice(5))}</span>
+            </div>
+          `).join("")
+        : `<p class="text-center text-xs text-slate-300 py-6">尚無資料</p>`;
+
+      const modal = document.createElement("div");
+      modal.id = "detailModal";
+      modal.className = "fixed inset-0 bg-black/60 backdrop-blur-md z-[110] flex items-center justify-center p-8";
+      modal.innerHTML = `
+        <div class="bg-white w-full rounded-[2.5rem] p-6 shadow-2xl" style="max-width:420px;">
+          <div class="flex items-center justify-center relative mb-4">
+            <h3 class="text-center font-black" style="color:${color}">${title}</h3>
+            <button id="closeDetailX" class="absolute right-0 w-10 h-10 rounded-full bg-[#F2F4EF] text-slate-400 font-black">✕</button>
+          </div>
+
+          <div class="max-h-72 overflow-y-auto space-y-2 no-scrollbar">
+            ${items}
+          </div>
+
+          <button id="closeDetail" class="w-full mt-4 py-3 bg-[var(--main-dark)] text-white rounded-xl font-black">關閉</button>
+        </div>
+      `;
+
+      const old = document.getElementById("detailModal");
+      if(old) old.remove();
+
+      document.body.appendChild(modal);
+
+      modal.addEventListener("click", (e)=>{
+        if(e.target.id==="detailModal") closeDetailModal();
+      });
+      document.getElementById("closeDetail").onclick = closeDetailModal;
+      document.getElementById("closeDetailX").onclick = closeDetailModal;
+    }
+
+    function closeDetailModal(){
+      const m = document.getElementById("detailModal");
+      if(m) m.remove();
+    }
+
+    /********************
+     * Boot
+     ********************/
+    render();
+  </script>
+</body>
+</html>
